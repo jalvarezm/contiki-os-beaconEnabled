@@ -359,6 +359,7 @@ PROCESS_THREAD(beacon_send_process, ev, data)
 
   while(1) {
     int beacon_len;
+    int radioTxStatus;
 
     /* Prepare the EB packet and schedule it to be sent */
 	packetbuf_clear();
@@ -370,9 +371,31 @@ PROCESS_THREAD(beacon_send_process, ev, data)
     {
     	packetbuf_set_datalen(beacon_len);
     }
+    NETSTACK_RADIO.on();
+    radioTxStatus = NETSTACK_RADIO.send(packetbuf_dataptr(),packetbuf_datalen());
 
+    printf("\n Radio send status: ");
+    switch( radioTxStatus )
+	{
+    	case RADIO_TX_OK:
+    		printf("RADIO_TX_OK");
+    	break;
+    	case RADIO_TX_ERR:
+    		printf("RADIO_TX_ERR");
+		break;
+    	case RADIO_TX_COLLISION:
+    		printf("RADIO_TX_COLLISION");
+    	break;
+    	case RADIO_TX_NOACK:
+    		printf("RADIO_TX_COLLISION");
+    	break;
+    	default:
+    		printf("RADIO_TX_UNKNOWN");
+	}
+
+#if 0
     NETSTACK_RDC.send(packet_sent,packetbuf_dataptr());
-
+#endif
     etimer_set(&be_timer, (clock_time_t)BE_SF_DEFAULT_PERIOD);
     PROCESS_WAIT_UNTIL(etimer_expired(&be_timer));
   }
@@ -663,8 +686,8 @@ packet_sent(void *ptr, int status, int num_transmissions)
 static void
 send_packet(mac_callback_t sent, void *ptr)
 {
-	PRINTF("BE: send_packet() called, doing nothing!");
 #if 0
+	PRINTF("BE: send_packet() called, doing nothing!");
   struct rdc_buf_list *q;
   struct neighbor_queue *n;
   static uint8_t initialized = 0;
