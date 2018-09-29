@@ -69,6 +69,7 @@
 #include "net/linkaddr.h"
 #include <string.h>
 
+
 /**  \brief The 16-bit identifier of the PAN on which the device is
  *   operating.  If this value is 0xffff, the device is not
  *   associated.
@@ -492,17 +493,18 @@ frame802154_create(frame802154_t *p, uint8_t *buf)
 			(p->superframe_spec.panCoord << 6) | (p->superframe_spec.assocPermit << 7);
 	buf[pos++] = 0x00; /*GTS fields to be implemented.*/
 	buf[pos++] = (p->pendingAddr_fields.spec.numberOfShort & 0xff) | ((p->pendingAddr_fields.spec.numberOfExt << 4) & 0xff);
+
 	for(i=0; i < p->pendingAddr_fields.spec.numberOfShort; i++)
 	{
-		buf[pos++] = p->pendingAddr_fields.list.shortAddr[i].assignAddr[0];
 		buf[pos++] = p->pendingAddr_fields.list.shortAddr[i].assignAddr[1];
+		buf[pos++] = p->pendingAddr_fields.list.shortAddr[i].assignAddr[0];
 	}
 	for(i=0; i < p->pendingAddr_fields.spec.numberOfExt; i++)
 	{
-               for(j=7;j>=0;j--)
-	       {
-		  buf[pos++] = p->pendingAddr_fields.list.extAddr[i].assignAddr[j];
-	       }
+		for(j=7;j>=0;j--)
+	    {
+			buf[pos++] = p->pendingAddr_fields.list.extAddr[i].assignAddr[j];
+	    }
 	}
   }
   if(p->fcf.frame_type == FRAME802154_CMDFRAME)
@@ -516,9 +518,11 @@ frame802154_create(frame802154_t *p, uint8_t *buf)
 	}
 	else if(p->commandIdentifier == 0x01) /*Association request*/
 	{
-		buf[pos++] = ((p->capability_info.deviceType & 0xff) << 1) | ((p->capability_info.powerSource & 0xff) << 2) | \
-			     ((p->capability_info.recOnIdle & 0xff) << 3) |((p->capability_info.security & 0xff) << 6) | \
-                             ((p->capability_info.allocate & 0xff) << 7);
+		buf[pos++] = ((p->capability_info.deviceType  & 0xff) << 1)| \
+					 ((p->capability_info.powerSource & 0xff) << 2)| \
+			     	 ((p->capability_info.recOnIdle   & 0xff) << 3)| \
+					 ((p->capability_info.security    & 0xff) << 6)| \
+                     ((p->capability_info.allocate    & 0xff) << 7);
 	}
 	else if(p->commandIdentifier == 0x04) /*Data request*/
 	{

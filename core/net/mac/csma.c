@@ -40,6 +40,7 @@
 #include "net/mac/csma.h"
 #include "net/packetbuf.h"
 #include "net/queuebuf.h"
+#include "framer-be.h"
 
 #include "sys/ctimer.h"
 #include "sys/clock.h"
@@ -51,11 +52,8 @@
 #include "lib/list.h"
 #include "lib/memb.h"
 
-#include <string.h>
 
-#include <stdio.h>
-
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG
 #include <stdio.h>
 #define PRINTF(...) printf(__VA_ARGS__)
@@ -124,14 +122,313 @@ struct neighbor_queue {
 #define CSMA_MAX_PACKET_PER_NEIGHBOR MAX_QUEUED_PACKETS
 #endif /* CSMA_CONF_MAX_PACKET_PER_NEIGHBOR */
 
+
 #define MAX_QUEUED_PACKETS QUEUEBUF_NUM
 MEMB(neighbor_memb, struct neighbor_queue, CSMA_MAX_NEIGHBOR_QUEUES);
 MEMB(packet_memb, struct rdc_buf_list, MAX_QUEUED_PACKETS);
 MEMB(metadata_memb, struct qbuf_metadata, MAX_QUEUED_PACKETS);
+#if 0
 LIST(neighbor_list);
+#endif
+/* Temporal hand-coded value for Superfame time period on Beacon-enable mode */
+#define BE_SF_DEFAULT_PERIOD (5*CLOCK_SECOND)
+
+/* Beacon enabled processes */
+PROCESS_NAME(beacon_send_process);
+PROCESS(beacon_send_process, "BE: send beacon process");
 
 static void packet_sent(void *ptr, int status, int num_transmissions);
+#if 0
 static void transmit_packet_list(void *ptr);
+
+int be_packet_create_becon( uint8_t *buf, int buf_size );
+/*---------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------*/
+/* Create an beacon packet */
+int
+be_packet_create_becon( uint8_t *buf, int buf_size )
+{
+  uint8_t curr_len = 0;
+
+  frame802154_t p;
+
+  /* Create 802.15.4 header */
+  memset(&p, 0, sizeof(p));
+  p.fcf.frame_type = FRAME802154_BEACONFRAME;
+  p.fcf.ie_list_present = 0;
+  p.fcf.frame_version = FRAME802154_IEEE802154_2006;
+  p.fcf.src_addr_mode = LINKADDR_SIZE > 2 ? FRAME802154_LONGADDRMODE : FRAME802154_SHORTADDRMODE;
+  p.fcf.dest_addr_mode = FRAME802154_SHORTADDRMODE;
+  p.fcf.sequence_number_suppression = 1;
+  /* It is important not to compress PAN ID, as this would result in not including either
+   * source nor destination PAN ID, leaving potential joining devices unaware of the PAN ID. */
+  p.fcf.panid_compression = 0;
+
+  p.src_pid = frame802154_get_pan_id();
+  p.dest_pid = frame802154_get_pan_id();
+  linkaddr_copy((linkaddr_t *)&p.src_addr, &linkaddr_node_addr);
+  p.dest_addr[0] = 0xff;
+  p.dest_addr[1] = 0xff;
+
+  curr_len = frame802154_create(&p, buf);
+
+
+
+#if 0
+
+#if  LLSEC802154_ENABLED
+  if(tsch_is_pan_secured) {
+    p.fcf.security_enabled = packetbuf_attr(PACKETBUF_ATTR_SECURITY_LEVEL) > 0;
+    p.aux_hdr.security_control.security_level = packetbuf_attr(PACKETBUF_ATTR_SECURITY_LEVEL);
+    p.aux_hdr.security_control.key_id_mode = packetbuf_attr(PACKETBUF_ATTR_KEY_ID_MODE);
+    p.aux_hdr.security_control.frame_counter_suppression = 1;
+    p.aux_hdr.security_control.frame_counter_size = 1;
+    p.aux_hdr.key_index = packetbuf_attr(PACKETBUF_ATTR_KEY_INDEX);
+  }
+#endif /* LLSEC802154_ENABLED */
+
+  /* Prepare Information Elements for inclusion in the EB */
+  memset(&ies, 0, sizeof(ies));
+
+  /* Add TSCH timeslot timing IE. */
+#if TSCH_PACKET_EB_WITH_TIMESLOT_TIMING
+  {
+    int i;
+    ies.ie_tsch_timeslot_id = 1;
+    for(i = 0; i < tsch_ts_elements_count; i++) {
+      ies.ie_tsch_timeslot[i] = RTIMERTICKS_TO_US(tsch_timing[i]);
+    }
+  }
+#endif /* TSCH_PACKET_EB_WITH_TIMESLOT_TIMING */
+
+  /* Add TSCH hopping sequence IE */
+#if TSCH_PACKET_EB_WITH_HOPPING_SEQUENCE
+  if(tsch_hopping_sequence_length.val <= sizeof(ies.ie_hopping_sequence_list)) {
+    ies.ie_channel_hopping_sequence_id = 1;
+    ies.ie_hopping_sequence_len = tsch_hopping_sequence_length.val;
+    memcpy(ies.ie_hopping_sequence_list, tsch_hopping_sequence, ies.ie_hopping_sequence_len);
+  }
+#endif /* TSCH_PACKET_EB_WITH_HOPPING_SEQUENCE */
+
+  /* Add Slotframe and Link IE */
+#if TSCH_PACKET_EB_WITH_SLOTFRAME_AND_LINK
+  {
+    /* Send slotframe 0 with link at timeslot 0 */
+    struct tsch_slotframe *sf0 = tsch_schedule_get_slotframe_by_handle(0);
+    struct tsch_link *link0 = tsch_schedule_get_link_by_timeslot(sf0, 0);
+    if(sf0 && link0) {
+      ies.ie_tsch_slotframe_and_link.num_slotframes = 1;
+      ies.ie_tsch_slotframe_and_link.slotframe_handle = sf0->handle;
+      ies.ie_tsch_slotframe_and_link.slotframe_size = sf0->size.val;
+      ies.ie_tsch_slotframe_and_link.num_links = 1;
+      ies.ie_tsch_slotframe_and_link.links[0].timeslot = link0->timeslot;
+      ies.ie_tsch_slotframe_and_link.links[0].channel_offset = link0->channel_offset;
+      ies.ie_tsch_slotframe_and_link.links[0].link_options = link0->link_options;
+    }
+  }
+#endif /* TSCH_PACKET_EB_WITH_SLOTFRAME_AND_LINK */
+
+  /* First add header-IE termination IE to stipulate that next come payload IEs */
+  if((ret = frame80215e_create_ie_header_list_termination_1(buf + curr_len, buf_size - curr_len, &ies)) == -1) {
+    return -1;
+  }
+  curr_len += ret;
+
+  /* We start payload IEs, save offset */
+  if(hdr_len != NULL) {
+    *hdr_len = curr_len;
+  }
+
+  /* Save offset of the MLME IE descriptor, we need to know the total length
+   * before writing it */
+  mlme_ie_offset = curr_len;
+  curr_len += 2; /* Space needed for MLME descriptor */
+
+  /* Save the offset of the TSCH Synchronization IE, needed to update ASN and join priority before sending */
+  if(tsch_sync_ie_offset != NULL) {
+    *tsch_sync_ie_offset = curr_len;
+  }
+  if((ret = frame80215e_create_ie_tsch_synchronization(buf + curr_len, buf_size - curr_len, &ies)) == -1) {
+    return -1;
+  }
+  curr_len += ret;
+
+  if((ret = frame80215e_create_ie_tsch_timeslot(buf + curr_len, buf_size - curr_len, &ies)) == -1) {
+    return -1;
+  }
+  curr_len += ret;
+
+  if((ret = frame80215e_create_ie_tsch_channel_hopping_sequence(buf + curr_len, buf_size - curr_len, &ies)) == -1) {
+    return -1;
+  }
+  curr_len += ret;
+
+  if((ret = frame80215e_create_ie_tsch_slotframe_and_link(buf + curr_len, buf_size - curr_len, &ies)) == -1) {
+    return -1;
+  }
+  curr_len += ret;
+
+  ies.ie_mlme_len = curr_len - mlme_ie_offset - 2;
+  if((ret = frame80215e_create_ie_mlme(buf + mlme_ie_offset, buf_size - mlme_ie_offset, &ies)) == -1) {
+    return -1;
+  }
+#endif
+  return curr_len;
+}
+#endif
+static void
+packet_sent(void *ptr, int status, int num_transmissions)
+{
+#if 0
+  struct neighbor_queue *n;
+  struct rdc_buf_list *q;
+
+  n = ptr;
+  if(n == NULL) {
+    return;
+  }
+
+  /* Find out what packet this callback refers to */
+  for(q = list_head(n->queued_packet_list);
+      q != NULL; q = list_item_next(q)) {
+    if(queuebuf_attr(q->buf, PACKETBUF_ATTR_MAC_SEQNO) ==
+       packetbuf_attr(PACKETBUF_ATTR_MAC_SEQNO)) {
+      break;
+    }
+  }
+
+  if(q == NULL) {
+    PRINTF("csma: seqno %d not found\n",
+           packetbuf_attr(PACKETBUF_ATTR_MAC_SEQNO));
+    return;
+  } else if(q->ptr == NULL) {
+    PRINTF("csma: no metadata\n");
+    return;
+  }
+#endif
+
+  switch(status) {
+  case MAC_TX_OK:
+	 PRINTF("MAC_TX_OK - ");
+    /*tx_ok(q, n, num_transmissions);*/
+    break;
+  case MAC_TX_NOACK:
+	PRINTF("MAC_TX_NOACK - ");
+    /*noack(q, n, num_transmissions);*/
+    break;
+  case MAC_TX_COLLISION:
+	PRINTF("MAC_TX_COLLISION - ");
+	/*collision(q, n, num_transmissions);*/
+    break;
+  case MAC_TX_DEFERRED:
+	PRINTF("MAC_TX_DEFERRED - ");
+    break;
+  default:
+	PRINTF("tx_done() -");
+
+    /*tx_done(status, q, n);*/
+    break;
+  }
+}
+
+/* A periodic process to send beacon frames when using Beacon-Enabled (BE) mode */
+PROCESS_THREAD(beacon_send_process, ev, data)
+{
+  static struct etimer be_timer;
+  /* TODO: Get this value using the appropriate mechanisms */
+  static int is_coordinator = 1;
+
+  PROCESS_BEGIN();
+
+  /*TODO: Figure out association mechanism in Beacon-enable context */
+#if 0
+  /* Wait until association */
+  etimer_set(&eb_timer, CLOCK_SECOND / 10);
+  while(!tsch_is_associated) {
+    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
+    etimer_reset(&eb_timer);
+  }
+#endif
+
+  /* Set an initial delay except for coordinator, which should send an EB asap */
+  while(!is_coordinator) {
+    etimer_set(&be_timer, BE_SF_DEFAULT_PERIOD);
+    PROCESS_WAIT_UNTIL(etimer_expired(&be_timer));
+  }
+
+  while(1) {
+    int beacon_len;
+
+    /* Prepare the EB packet and schedule it to be sent */
+	packetbuf_clear();
+	packetbuf_set_attr(PACKETBUF_ATTR_FRAME_TYPE, FRAME802154_BEACONFRAME);
+
+	beacon_len = be_packet_create_beacon( (uint8_t *)packetbuf_dataptr(), (int)PACKETBUF_SIZE );
+
+    if( beacon_len > 0 )
+    {
+    	packetbuf_set_datalen(beacon_len);
+    }
+
+    NETSTACK_RDC.send(packet_sent,packetbuf_dataptr());
+
+    etimer_set(&be_timer, (clock_time_t)BE_SF_DEFAULT_PERIOD);
+    PROCESS_WAIT_UNTIL(etimer_expired(&be_timer));
+  }
+
+    /* TSCH code snipped, left here just for reference */
+#if 0
+    if(tsch_is_associated && tsch_current_eb_period > 0) {
+      /* Enqueue EB only if there isn't already one in queue */
+      if(tsch_queue_packet_count(&tsch_eb_address) == 0) {
+        int eb_len;
+        uint8_t hdr_len = 0;
+        uint8_t tsch_sync_ie_offset;
+        /* Prepare the EB packet and schedule it to be sent */
+        packetbuf_clear();
+        packetbuf_set_attr(PACKETBUF_ATTR_FRAME_TYPE, FRAME802154_BEACONFRAME);
+#if LLSEC802154_ENABLED
+        if(tsch_is_pan_secured) {
+          /* Set security level, key id and index */
+          packetbuf_set_attr(PACKETBUF_ATTR_SECURITY_LEVEL, TSCH_SECURITY_KEY_SEC_LEVEL_EB);
+          packetbuf_set_attr(PACKETBUF_ATTR_KEY_ID_MODE, FRAME802154_1_BYTE_KEY_ID_MODE); /* Use 1-byte key index */
+          packetbuf_set_attr(PACKETBUF_ATTR_KEY_INDEX, TSCH_SECURITY_KEY_INDEX_EB);
+        }
+#endif /* LLSEC802154_ENABLED */
+        eb_len = be_packet_create_beacon(packetbuf_dataptr(), PACKETBUF_SIZE,
+            &hdr_len, &tsch_sync_ie_offset);
+        if(eb_len > 0) {
+          struct tsch_packet *p;
+          packetbuf_set_datalen(eb_len);
+          /* Enqueue EB packet */
+          if(!(p = tsch_queue_add_packet(&tsch_eb_address, NULL, NULL))) {
+            PRINTF("TSCH:! could not enqueue EB packet\n");
+          } else {
+            PRINTF("TSCH: enqueue EB packet %u %u\n", eb_len, hdr_len);
+            p->tsch_sync_ie_offset = tsch_sync_ie_offset;
+            p->header_len = hdr_len;
+          }
+        }
+      }
+    }
+    if(tsch_current_eb_period > 0) {
+      /* Next EB transmission with a random delay
+       * within [tsch_current_eb_period*0.75, tsch_current_eb_period[ */
+      delay = (tsch_current_eb_period - tsch_current_eb_period / 4)
+        + random_rand() % (tsch_current_eb_period / 4);
+    } else {
+      delay = TSCH_EB_PERIOD;
+    }
+    etimer_set(&eb_timer, delay);
+    PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
+  }
+#endif
+
+  PROCESS_END();
+}
+
+#if 0
 /*---------------------------------------------------------------------------*/
 static struct neighbor_queue *
 neighbor_queue_from_addr(const linkaddr_t *addr)
@@ -361,10 +658,13 @@ packet_sent(void *ptr, int status, int num_transmissions)
     break;
   }
 }
+#endif /*  */
 /*---------------------------------------------------------------------------*/
 static void
 send_packet(mac_callback_t sent, void *ptr)
 {
+	PRINTF("BE: send_packet() called, doing nothing!");
+#if 0
   struct rdc_buf_list *q;
   struct neighbor_queue *n;
   static uint8_t initialized = 0;
@@ -458,6 +758,7 @@ send_packet(mac_callback_t sent, void *ptr)
     PRINTF("csma: could not allocate neighbor, dropping packet\n");
   }
   mac_call_sent_callback(sent, ptr, MAC_TX_ERR, 1);
+#endif
 }
 /*---------------------------------------------------------------------------*/
 static void
@@ -469,7 +770,12 @@ input_packet(void)
 static int
 on(void)
 {
-  return NETSTACK_RDC.on();
+  PRINTF("RDC turned ON");
+  int ret = NETSTACK_RDC.on();
+  if( 1 == ret ){
+	  process_start(&beacon_send_process, NULL);
+  }
+  return ret;
 }
 /*---------------------------------------------------------------------------*/
 static int
@@ -490,13 +796,15 @@ channel_check_interval(void)
 static void
 init(void)
 {
+  PRINTF("CSMA init");
   memb_init(&packet_memb);
   memb_init(&metadata_memb);
   memb_init(&neighbor_memb);
+  process_start(&beacon_send_process, NULL);
 }
 /*---------------------------------------------------------------------------*/
 const struct mac_driver csma_driver = {
-  "CSMA",
+  "BEACON-EN",
   init,
   send_packet,
   input_packet,
