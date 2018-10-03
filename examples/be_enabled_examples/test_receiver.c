@@ -32,21 +32,62 @@
 
 /**
  * \file
- *         A MAC stack protocol that performs retransmissions when the
- *         underlying MAC layer has problems with collisions
+ *         Testing the broadcast layer in Rime
  * \author
  *         Adam Dunkels <adam@sics.se>
  */
 
-#ifndef CSMA_H_
-#define CSMA_H_
+#include "contiki.h"
+#include "net/rime/rime.h"
+#include "random.h"
+#include <string.h>
+#include "net/mac/csma.h"
+#include "dev/button-sensor.h"
 
-#include "net/mac/mac.h"
-#include "dev/radio.h"
+#include "dev/leds.h"
 
-extern const struct mac_driver csma_driver;
+#include <stdio.h>
 
-const struct mac_driver *csma_init(const struct mac_driver *r);
-void setCoordinator(int is_c);
+/*---------------------------------------------------------------------------*/
+PROCESS(broadcast_process, "Beacon test");
+AUTOSTART_PROCESSES(&broadcast_process);
+/*---------------------------------------------------------------------------*/
+static void
+broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
+{
 
-#endif /* CSMA_H_ */
+  printf("broadcast message received from %d.%d: '%s'\n",
+         from->u8[0], from->u8[1], (char *)packetbuf_dataptr());
+
+}
+static const struct broadcast_callbacks broadcast_call = {broadcast_recv};
+
+static struct broadcast_conn broadcast;
+PROCESS_THREAD(broadcast_process, ev, data)
+{
+	static struct etimer et;
+
+	  PROCESS_EXITHANDLER(broadcast_close(&broadcast);)
+
+	  PROCESS_BEGIN();
+
+	  broadcast_open(&broadcast, 129, &broadcast_call);
+
+	  setCoordinator(0);
+	  printf("RFD Device is set and running...");
+
+	  while(1) {
+
+	    /* Delay 2-4 seconds */
+	    etimer_set(&et, CLOCK_SECOND * 4 + random_rand() % (CLOCK_SECOND * 4));
+
+	    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+
+	    //packetbuf_copyfrom("beacon", 7);
+	    //broadcast_send(&broadcast);
+	    //printf("broadcast message sent\n");
+	  }
+
+	  PROCESS_END();
+
+}
