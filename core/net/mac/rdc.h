@@ -71,6 +71,9 @@ struct rdc_driver {
   /** Initialize the RDC driver */
   void (* init)(void);
 
+  /** Send a packet from the Rime Buffer until timer expires */
+  void (* send_packet_beaconMode)(mac_callback_t sent_callback, void *ptr);
+
   /** Send a packet from the Rime buffer  */
   void (* send)(mac_callback_t sent_callback, void *ptr);
 

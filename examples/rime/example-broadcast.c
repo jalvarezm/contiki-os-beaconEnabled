@@ -69,17 +69,17 @@ PROCESS_THREAD(example_broadcast_process, ev, data)
 
   broadcast_open(&broadcast, 129, &broadcast_call);
 
-  while(1) {
 
     /* Delay 2-4 seconds */
-    etimer_set(&et, CLOCK_SECOND * 4 + random_rand() % (CLOCK_SECOND * 4));
+    //etimer_set(&et, CLOCK_SECOND * 4 + random_rand() % (CLOCK_SECOND * 4));
 
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
-
+    //PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+    int i;
+    for(i=0;i<8;i++){
     packetbuf_copyfrom("Hello", 6);
     broadcast_send(&broadcast);
-    printf("broadcast message sent\n");
-  }
+    //printf("broadcast message %d sent\n",i);
+    }
 
   PROCESS_END();
 }

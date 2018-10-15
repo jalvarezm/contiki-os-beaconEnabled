@@ -55,7 +55,7 @@
 
 #include <stdio.h>
 
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG
 #include <stdio.h>
 #define PRINTF(...) printf(__VA_ARGS__)
@@ -173,7 +173,8 @@ transmit_packet_list(void *ptr)
       PRINTF("csma: preparing number %d %p, queue len %d\n", n->transmissions, q,
           list_length(n->queued_packet_list));
       /* Send packets in the neighbor's list */
-      NETSTACK_RDC.send_list(packet_sent, n, q);
+      //NETSTACK_RDC.send_list(packet_sent, n, q);
+      NETSTACK_RDC.send_packet_beaconMode(packet_sent, n);
     }
   }
 }

@@ -51,7 +51,7 @@
 #include "sys/cooja_mt.h"
 #endif /* CONTIKI_TARGET_COOJA || CONTIKI_TARGET_COOJA_IP64 */
 
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG
 #include <stdio.h>
 #define PRINTF(...) printf(__VA_ARGS__)
@@ -243,6 +243,7 @@ send_packet(mac_callback_t sent, void *ptr)
 static void
 send_list(mac_callback_t sent, void *ptr, struct rdc_buf_list *buf_list)
 {
+	printf("nullRDC.c");
   while(buf_list != NULL) {
     /* We backup the next pointer, as it may be nullified by
      * mac_call_sent_callback() */
