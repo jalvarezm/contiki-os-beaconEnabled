@@ -132,6 +132,8 @@ LIST(neighbor_list);
 
 static void packet_sent(void *ptr, int status, int num_transmissions);
 static void transmit_packet_list(void *ptr);
+
+static volatile int time = 14000;
 /*---------------------------------------------------------------------------*/
 static struct neighbor_queue *
 neighbor_queue_from_addr(const linkaddr_t *addr)
@@ -174,8 +176,9 @@ transmit_packet_list(void *ptr)
           list_length(n->queued_packet_list));
       /* Send packets in the neighbor's list */
       //NETSTACK_RDC.send_list(packet_sent, n, q);
-      rtimer_clock_t time = 10000;
+      //printf("time: %d",time);
       NETSTACK_RDC.send_packet_beaconMode(packet_sent, n, time);
+      time = time-13600;
     }
   }
 }

@@ -51,6 +51,7 @@
 #include "sys/compower.h"
 #include "sys/pt.h"
 #include "sys/rtimer.h"
+#include <stdio.h>
 
 
 #include <string.h>
@@ -243,6 +244,8 @@ static volatile unsigned char we_are_sending = 0;
 static volatile unsigned char radio_is_on = 0;
 static volatile rtimer_clock_t time;
 static volatile int initial_timer = 1;
+static volatile float startTime =0;
+static volatile int stopTime=0;
 
 #define DEBUG 0
 #if DEBUG
@@ -831,14 +834,13 @@ send_packet(mac_callback_t mac_callback, void *mac_callback_ptr,
     }
   }
 #endif /* WITH_PHASE_OPTIMIZATION */
-
   return ret;
 }
 
 /*---------------------------------------------------------------------------*/
-static void qsend_packet_beaconMode(mac_callback_t sent, void *ptr, rtimer_clock_t rem_time)
+static void qsend_packet_beaconMode(mac_callback_t sent, void *ptr, int rem_time)
 {
-	rtimer_clock_t tim_diff;
+	int tim_diff;
 	if(initial_timer)
 	{
 		initial_timer=0;
@@ -846,15 +848,19 @@ static void qsend_packet_beaconMode(mac_callback_t sent, void *ptr, rtimer_clock
 	}
 	else
 	{
-		tim_diff = RTIMER_NOW()-time;
+		tim_diff = stopTime-startTime ;
 	}
-
-	if(RTIMER_CLOCK_LT(tim_diff,rem_time)){
+	//printf("strt %d stop %d",startTime,stopTime);
+	//printf("TimDiff %d timeRem %d",tim_diff,rem_time);
+	if(tim_diff<rem_time){
+		startTime = (RTIMER_NOW()/RTIMER_SECOND)*1000000;
+		printf("strt %d",((int)RTIMER_NOW()/(int)RTIMER_SECOND)*1000000);
 		int ret = send_packet(sent, ptr, NULL, 0);
+		stopTime = RTIMER_NOW()/RTIMER_SECOND;
+		//printf("stop %u",RTIMER_NOW()/RTIMER_SECOND);
 		if(ret != MAC_TX_DEFERRED) {
 			mac_call_sent_callback(sent, ptr, ret, 1);
 			  }
-		time = RTIMER_NOW();
 	  }
 	else
 	{
