@@ -49,6 +49,8 @@
 /*---------------------------------------------------------------------------*/
 PROCESS(example_broadcast_process, "Broadcast example");
 AUTOSTART_PROCESSES(&example_broadcast_process);
+
+int i;
 /*---------------------------------------------------------------------------*/
 static void
 broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
@@ -69,17 +71,14 @@ PROCESS_THREAD(example_broadcast_process, ev, data)
 
   broadcast_open(&broadcast, 129, &broadcast_call);
 
-
-    /* Delay 2-4 seconds */
-    //etimer_set(&et, CLOCK_SECOND * 4 + random_rand() % (CLOCK_SECOND * 4));
-
-    //PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
-    int i;
-    for(i=0;i<8;i++){
+  	for(i=0;i<3;i++)
+  	{
     packetbuf_copyfrom("Hello", 6);
     broadcast_send(&broadcast);
-    //printf("broadcast message %d sent\n",i);
-    }
+    etimer_set(&et, CLOCK_SECOND * 4 + random_rand() % (CLOCK_SECOND * 4));
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+  	}
+    //printf("broadcast message sent\n");
 
   PROCESS_END();
 }

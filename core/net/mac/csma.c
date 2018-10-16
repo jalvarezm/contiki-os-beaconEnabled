@@ -174,7 +174,8 @@ transmit_packet_list(void *ptr)
           list_length(n->queued_packet_list));
       /* Send packets in the neighbor's list */
       //NETSTACK_RDC.send_list(packet_sent, n, q);
-      NETSTACK_RDC.send_packet_beaconMode(packet_sent, n);
+      rtimer_clock_t time = 10000;
+      NETSTACK_RDC.send_packet_beaconMode(packet_sent, n, time);
     }
   }
 }

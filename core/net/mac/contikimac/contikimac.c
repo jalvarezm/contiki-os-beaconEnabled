@@ -242,7 +242,7 @@ static volatile uint8_t contikimac_keep_radio_on = 0;
 static volatile unsigned char we_are_sending = 0;
 static volatile unsigned char radio_is_on = 0;
 static volatile rtimer_clock_t time;
-static volatile int initial_timer = 0;
+static volatile int initial_timer = 1;
 
 #define DEBUG 0
 #if DEBUG
@@ -836,16 +836,31 @@ send_packet(mac_callback_t mac_callback, void *mac_callback_ptr,
 }
 
 /*---------------------------------------------------------------------------*/
-static void qsend_packet_beaconMode(mac_callback_t sent, void *ptr)
+static void qsend_packet_beaconMode(mac_callback_t sent, void *ptr, rtimer_clock_t rem_time)
 {
-		time=RTIMER_NOW();
-		printf("time %u",RTIMER_NOW());
-	if(RTIMER_CLOCK_LT(time,RTIMER_ARCH_SECOND*(1))){
-			int ret = send_packet(sent, ptr, NULL, 0);
-			  if(ret != MAC_TX_DEFERRED) {
-			    mac_call_sent_callback(sent, ptr, ret, 1);
+	rtimer_clock_t tim_diff;
+	if(initial_timer)
+	{
+		initial_timer=0;
+		tim_diff = 0;
+	}
+	else
+	{
+		tim_diff = RTIMER_NOW()-time;
+	}
+
+	if(RTIMER_CLOCK_LT(tim_diff,rem_time)){
+		int ret = send_packet(sent, ptr, NULL, 0);
+		if(ret != MAC_TX_DEFERRED) {
+			mac_call_sent_callback(sent, ptr, ret, 1);
 			  }
+		time = RTIMER_NOW();
 	  }
+	else
+	{
+		printf("timer expired");
+	}
+
 }
 /*---------------------------------------------------------------------------*/
 static void
