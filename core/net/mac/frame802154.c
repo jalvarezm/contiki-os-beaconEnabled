@@ -488,11 +488,19 @@ frame802154_create(frame802154_t *p, uint8_t *buf)
 #endif /* LLSEC802154_USES_AUX_HEADER */
   if(p->fcf.frame_type == FRAME802154_BEACONFRAME)
   {
-	buf[pos++] = (p->superframe_spec.beaconOrder & 0xff) | ((p->superframe_spec.superframeOrder << 4) & 0xff);
-	buf[pos++] = (p->superframe_spec.finalCapSlot & 0xff) | (p->superframe_spec.ble << 4) | (p->superframe_spec.reserved << 5) | \
-			(p->superframe_spec.panCoord << 6) | (p->superframe_spec.assocPermit << 7);
+	buf[pos++] = (p->superframe_spec.beaconOrder & 0xff) |
+			     ((p->superframe_spec.superframeOrder << 4) & 0xff);
+
+	buf[pos++] = (p->superframe_spec.finalCapSlot & 0xff) 	| \
+			     (p->superframe_spec.ble << 4) 				| \
+				 (p->superframe_spec.reserved << 5) 		| \
+				 (p->superframe_spec.panCoord << 6) 		| \
+				 (p->superframe_spec.assocPermit << 7);
+
 	buf[pos++] = 0x00; /*GTS fields to be implemented.*/
-	buf[pos++] = (p->pendingAddr_fields.spec.numberOfShort & 0xff) | ((p->pendingAddr_fields.spec.numberOfExt << 4) & 0xff);
+
+	buf[pos++] = (p->pendingAddr_fields.spec.numberOfShort & 0xff) | \
+			     ((p->pendingAddr_fields.spec.numberOfExt << 4) & 0xff);
 
 	for(i=0; i < p->pendingAddr_fields.spec.numberOfShort; i++)
 	{
@@ -690,6 +698,7 @@ frame802154_parse(uint8_t *data, int len, frame802154_t *pf)
 #endif /* LLSEC802154_USES_EXPLICIT_KEYS */
   }
 #endif /* LLSEC802154_USES_AUX_HEADER */
+
   if(pf->fcf.frame_type == FRAME802154_BEACONFRAME)
   {
 	pf->superframe_spec.beaconOrder = p[0] & 0x0f;
