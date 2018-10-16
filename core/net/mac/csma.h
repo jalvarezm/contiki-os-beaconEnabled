@@ -44,9 +44,17 @@
 #include "net/mac/mac.h"
 #include "dev/radio.h"
 
+/* The radio polling frequency (in Hz) during association process */
+#ifdef BE_CONF_ASSOCIATION_POLL_FREQUENCY
+#define BE_ASSOCIATION_POLL_FREQUENCY TSCH_CONF_ASSOCIATION_POLL_FREQUENCY
+#else
+#define BE_ASSOCIATION_POLL_FREQUENCY 64
+#endif
+
 extern const struct mac_driver csma_driver;
 
 const struct mac_driver *csma_init(const struct mac_driver *r);
-void setCoordinator(int is_c);
+void set_coordinator(void);
+void unset_coordinator(void);
 
 #endif /* CSMA_H_ */
