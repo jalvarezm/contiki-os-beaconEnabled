@@ -53,7 +53,7 @@
 #include "lib/memb.h"
 
 
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG
 #include <stdio.h>
 #define PRINTF(...) printf(__VA_ARGS__)
@@ -80,6 +80,12 @@
 #else
 	#define _ALWAYS_ (1)
 #endif
+
+/*
+ * Used to convert RTIMERTICKS to US, to use RTIMERTICKS_TO_US()
+ * for large values is problematic
+ */
+#define US_IN_ONE_RTIMERTICK ( RTIMERTICKS_TO_US(1) )
 
 
 /* The maximum number of co-existing neighbor queues */
@@ -146,7 +152,9 @@
 #define CSMA_DEFAULT_TS_MAX_TX             4256
 #define CSMA_DEFAULT_TS_ACTIVE_LENGTH      122400
 #define CSMA_DEFAULT_TS_INACTIVE_LENGTH    122400
-#define CSMA_DEFAULT_TS_SEND_BEACON_GUARD  10
+#define CSMA_DEFAULT_TS_SEND_BEACON_GUARD  1000
+
+
 #define CSMA_DEFAULT_TS_BI			       3916800	/*BO=8, SO=7*/
 #define CSMA_DEFAULT_TS_SD                 1958400
 
@@ -163,6 +171,11 @@
 #define MAX_TSN_VALUE	(32)
 #define TSN_INVALID		(0xFF) /* This node has not been associated */
 #define TSN_INACTIVE	(0xFE) /* This node is associated but in the inactive period*/
+
+/* Calculate packet tx/rx duration in rtimer ticks based on sent
+ * packet len in bytes with 802.15.4 250kbps data rate.
+ * One byte = 32us. Add two bytes for CRC and one for len field */
+#define PACKET_DURATION(len) US_TO_RTIMERTICKS(32 * ((len) + 3))
 
 
 /************ Types ***********/
@@ -184,8 +197,6 @@ enum csma_timeslot_timing_elements {
   csma_ts_active_length,
   csma_ts_inactive_length,
   csma_ts_send_beacon_guard,
-  csma_ts_bi,				/*Beacon interval*/
-  csma_ts_sd,				/*Superframe duration*/
   csma_ts_elements_count, /* Not a timing element */
 };
 
@@ -206,11 +217,9 @@ static const uint32_t csma_default_timing_us[csma_ts_elements_count] = {
   CSMA_DEFAULT_TS_ACTIVE_LENGTH,
   CSMA_DEFAULT_TS_INACTIVE_LENGTH,
   CSMA_DEFAULT_TS_SEND_BEACON_GUARD,
-  CSMA_DEFAULT_TS_BI,
-  CSMA_DEFAULT_TS_SD,
 };
 /* CSMA timeslot timing (in rtimer ticks) */
-rtimer_clock_t csma_timing[csma_ts_elements_count];
+static rtimer_clock_t csma_timing[csma_ts_elements_count]={0};
 
 /* By default: check that rtimer runs at >=32kHz and use a guard time of 10us */
 #if RTIMER_SECOND < (32 * 1024)
@@ -249,43 +258,6 @@ rtimer_clock_t csma_timing[csma_ts_elements_count];
     BUSYWAIT_UNTIL_ABS(0, ref_time, offset); \
   } while(0);
 
-/* Link options */
-#define LINK_OPTION_TX              1
-#define LINK_OPTION_RX              2
-#define LINK_OPTION_SHARED          4
-#define LINK_OPTION_TIME_KEEPING    8
-
-/* 802.15.4e link types.
- * LINK_TYPE_ADVERTISING_ONLY is an extra one: for EB-only links. */
-enum link_type { LINK_TYPE_NORMAL, LINK_TYPE_ADVERTISING, LINK_TYPE_ADVERTISING_ONLY };
-
-struct scsma_link {
-  /* Links are stored as a list: "next" must be the first field */
-  struct scsma_link *next;
-  /* MAC address of neighbor */
-  linkaddr_t addr;
-  /* Timeslot for this link */
-  uint16_t timeslot;
-  /* A bit string that defines
-   * b0 = Transmit, b1 = Receive, b2 = Shared, b3 = Timekeeping, b4 = reserved */
-  uint8_t link_options;
-  /* Type of link. NORMAL = 0. ADVERTISING = 1, and indicates
-     the link may be used to send an beacon frames. */
-  enum link_type link_type;
-  /* Any other data for upper layers */
-  void *data;
-};
-
-/***** Beacon frame link *****/
-/*
- * Use virtual address for beacon frames
- * timeslot allocated for this frame is always 0
- * link option: Transmit
- * link_type: ADVERTISING
- */
-#if 0
-const struct scdma_link beacon_frame_link = {NULL, { { 0, 0 } }, 1, 1, LINK_TYPE_ADVERTISING};
-#endif
 
 /* Packet metadata */
 struct qbuf_metadata {
@@ -320,9 +292,9 @@ struct queuebuf_data beacon_frame;
 /*TSN information struct*/
 
 typedef struct tsn_info{
-	uint8_t volatile tsn_value;
+	uint8_t  tsn_value;
 	uint8_t	is_tsn_start_time_set;
-	rtimer_clock_t volatile tsn_start_time;
+	rtimer_clock_t  tsn_start_time;
 }tsn_into_t;
 
 /* Updated by keep_tsn_info process, used in different process */
@@ -339,12 +311,13 @@ const linkaddr_t broadcast_address = { { 0xff, 0xff } };
 const linkaddr_t beacon_address = { { 0, 0 } }; /*Virtual address for beacon frames*/
 #endif /* LINKADDR_SIZE == 8 */
 
-
+#if 0
 /* Temporal hand-coded value for Superfame time period on Beacon-enable mode */
 #define BEACON_FRAME_CREATION_INT_CLOCK_TICKS	(US_TO_SEC(CSMA_DEFAULT_TS_BI*CLOCK_CONF_SECOND))
 #define BEACON_INT_INACTIVE_PERIOD				(US_TO_SEC((CSMA_DEFAULT_TS_BI - CSMA_DEFAULT_TS_SD)*CLOCK_CONF_SECOND))
 
 #define US_TO_SEC(n)			((n)/1000000)
+#endif
 
 /* Is the BE PAN started */
 int be_is_started = FALSE;
@@ -361,7 +334,8 @@ static int active_period = FALSE;
 static int prepare_for_active = FALSE;
 /*Flag that indicates next time slot the active period will start*/
 static int prepare_for_inactive = FALSE;
-
+/* Did we received the beacon frame correctly?*/
+static int beacon_recv = FALSE;
 
 /* Current period for EB output */
 static clock_time_t   beacon_interval_clk_ticks;
@@ -374,14 +348,19 @@ MEMB(metadata_memb, struct qbuf_metadata, MAX_QUEUED_PACKETS);
 LIST(neighbor_list);
 
 PROCESS(keep_tsn_process, "PAN-BE: Keep information about time slot number during BE operation");
+#if 0
 PROCESS(beacon_process, "PAN-BE: Beacon frame process");
 PROCESS(main_process, "PAN-BE: main process");
-
+#endif
 static PT_THREAD(tsn_update(struct rtimer *t));
 static struct pt tsn_update_pt;
 
+#if 0
 static PT_THREAD(slot_operation(struct rtimer *t, void *ptr));
 static struct pt slot_operation_pt;
+#endif
+
+static PT_THREAD(beacon_tx(struct pt *pt));
 
 
 
@@ -389,13 +368,15 @@ static struct pt slot_operation_pt;
  *	Function prototypes
  */
 
-static void 	send_queue_add_packet( const linkaddr_t *addr, mac_callback_t sent, void *ptr );
-
+#if 0
 static uint8_t 	schedule_slot_operation(struct rtimer *tm,
 		                                rtimer_clock_t ref_time,
 										rtimer_clock_t offset);
+#endif
 
-static uint8_t tsn_update_schedule	(struct rtimer *tm,
+static int 		prepare_beacon_frame( void );
+
+static uint8_t 	tsn_update_schedule	(struct rtimer *tm,
 									 rtimer_clock_t ref_time,
 									 rtimer_clock_t offset);
 
@@ -487,7 +468,7 @@ rsync_tsn( const uint8_t tsn_ref, const rtimer_clock_t now )
 	current_tsn.tsn_value = tsn_ref;
 	current_tsn.tsn_start_time = now;
 	current_tsn.is_tsn_start_time_set = TRUE;
-
+	PRINTF("TSN_sync: %d st: %u\n",current_tsn.tsn_value, current_tsn.tsn_start_time);
 }
 static void
 reset_tsn( void )
@@ -503,6 +484,7 @@ increment_tsn( const rtimer_clock_t next_tsn_start_value )
 {
 	current_tsn.tsn_value = (current_tsn.tsn_value + 1) % MAX_TSN_VALUE;
 	current_tsn.tsn_start_time = next_tsn_start_value;
+	PRINTF("TSN_sch: %d timestamp:%u\n",current_tsn.tsn_value, next_tsn_start_value);
 }
 /*****************************************************************************
  * 							SCHEDULING FUNCTIONS
@@ -626,6 +608,7 @@ PT_THREAD(beacon_scan(struct pt *pt))
 
   static struct etimer scan_timer;
   etimer_set(&scan_timer, 1);
+  int is_packet_pending;
 
   PRINTF("beacon_scan()\n");
 
@@ -637,16 +620,18 @@ PT_THREAD(beacon_scan(struct pt *pt))
 
 	    NETSTACK_RADIO.on();
 
-		int is_packet_pending = NETSTACK_RADIO.pending_packet();
+		is_packet_pending = NETSTACK_RADIO.pending_packet();
 
 	    if(!is_packet_pending && NETSTACK_RADIO.receiving_packet()) {
 	      /* If we are currently receiving a packet, wait until end of reception */
+	      t0 = RTIMER_NOW();
 	      BUSYWAIT_UNTIL_ABS((is_packet_pending = NETSTACK_RADIO.pending_packet()), t0, RTIMER_SECOND / 100);
 	    }
 
 		if(is_packet_pending)
 		{
-			rsync_tsn(0,RTIMER_NOW()-50000);
+			t0 = RTIMER_NOW() + csma_timing[csma_ts_send_beacon_guard];
+			rsync_tsn( 0, RTIMER_NOW()  );
 			/* Read packet */
 			uint8_t* pBuf = (uint8_t *)packetbuf_dataptr();
 			int len = NETSTACK_RADIO.read(packetbuf_dataptr(), packetbuf_remaininglen());
@@ -654,27 +639,99 @@ PT_THREAD(beacon_scan(struct pt *pt))
 			frame802154_parse(pBuf, len, &frame);
 
 			/*Simple association process*/
-			/*TODO: Is it enough?*/
+			/*TODO: Is it good enough?*/
 
 			if( ( FRAME802154_BEACONFRAME == frame.fcf.frame_type ) &&  	/*It is a beacon frame type */
 				( FRAME802154_IEEE802154E_2012 >= frame.fcf.frame_version ) ){ 	/* It is NOT an Enhanced beacon frame*/
 				frame802154_set_pan_id( frame.src_pid );
 				be_is_associated = TRUE;
-				/*TODO: node_id is defined automatically in Cooja when a new mote is created*/
-				PRINTF("Node associated to PAN id: %d successfully!\n", frame.src_pid);
+
+				PRINTF("Node associated to PAN id: <%x> \n", frame.src_pid);
 			}
 
 			// TODO: after parsing the beacon, find the required values
 		}
-
-	    if(be_is_associated) {
-	      /* End of association, turn the radio off */
-	      NETSTACK_RADIO.off();
-	    } else if(!be_is_coordinator) {
+		else if(!be_is_coordinator)
+		{
 	      /* Go back to scanning */
 	      etimer_reset(&scan_timer);
 	      PT_WAIT_UNTIL(pt, etimer_expired(&scan_timer));
+
 	    }
+	}
+
+  PT_END(pt);
+}
+
+/*---------------------------------------------------------------------------*/
+/* Reading protothread, called by be_process:
+ * Listen until it receives a beacon frame within the active timeslot 0
+ */
+PT_THREAD(beacon_rx(struct pt *pt))
+{
+	PT_BEGIN(pt);
+
+	static struct etimer scan_timer;
+	int is_packet_pending = FALSE;
+	etimer_set(&scan_timer, 1);
+	frame802154_t frame;
+
+	int try = 0;
+	uint8_t packet_seen = FALSE;
+
+	rtimer_clock_t t0;
+	rtimer_clock_t offset = 32;
+
+	PRINTF("PT beacon_rx\n");
+
+	NETSTACK_RADIO.on();
+
+	is_packet_pending = NETSTACK_RADIO.pending_packet();
+
+	while( (try++ <= 100) && !is_packet_pending  )
+	{
+		if( NETSTACK_RADIO.receiving_packet() )
+		{
+			rsync_tsn(0, RTIMER_NOW());
+			/* If we are currently receiving a packet, wait until end of reception */
+			BUSYWAIT_UNTIL_ABS((is_packet_pending = NETSTACK_RADIO.pending_packet()), t0, RTIMER_SECOND / 100);
+		}
+		else
+		{
+			/* Otherwise wait for 5 rtimer ticks (BLOCKING WAIT), exit when we see a packet in the air */
+			t0 = RTIMER_NOW();
+			BUSYWAIT_UNTIL_ABS(NETSTACK_RADIO.receiving_packet(), t0, (t0 + offset));
+			is_packet_pending = NETSTACK_RADIO.pending_packet();
+			if( is_packet_pending )
+			{
+				/*Rsync TS0 start time considering the time to transmit the beacon frame*/
+				t0 = RTIMER_NOW() - PACKET_DURATION(beacon_frame.len);
+				rsync_tsn(0, t0);
+			}
+		}
+	}
+
+	if(is_packet_pending)
+	{
+		/* Read packet */
+		uint8_t* pBuf = (uint8_t *)packetbuf_dataptr();
+		int len = NETSTACK_RADIO.read(packetbuf_dataptr(), packetbuf_remaininglen());
+
+		frame802154_parse(pBuf, len, &frame);
+
+		if( ( FRAME802154_BEACONFRAME 	   == frame.fcf.frame_type 		) &&  /*It is a beacon frame type */
+			( FRAME802154_IEEE802154E_2012 >= frame.fcf.frame_version 	) &&  /* It is NOT an Enhanced beacon frame*/
+			( frame802154_get_pan_id 	   == frame.src_pid				)) 	  /* It is the same PAN that we're associated with*/
+		{
+			beacon_recv = TRUE;
+		}
+	}
+
+	if(!beacon_recv)
+	{
+		/*If we did not received the beacon frame, leave the PAN until we get a beacon again.*/
+		be_is_associated = FALSE;
+		PRINTF("Leaving PAN!\n");
 	}
 
   PT_END(pt);
@@ -684,16 +741,17 @@ PT_THREAD(beacon_scan(struct pt *pt))
 static
 PT_THREAD(tx_slot(struct pt *pt, struct rtimer *t))
 {
-
   PT_BEGIN(pt);
 
-
-  if( current_tsn.tsn_value == 0 ){ /*Send Beacon*/
+  if( current_tsn.tsn_value == 0 ) /*Send Beacon*/
+  {
 	  /* Copy to beacon frame to the radio buffer */
-	  if( beacon_frame.len > 0 ){
+	  if( beacon_frame.len > 0 )
+	  {
 		  NETSTACK_RADIO.on();
 		  if( NETSTACK_RADIO.prepare(beacon_frame.data, beacon_frame.len) == 0 ){ /* 0 means success */
 			  //TSN_SCHEDULE_AND_YIELD(pt, t, current_tsn.tsn_start_time, csma_timing[csma_ts_send_beacon_guard]);
+			  BUSYWAIT_UNTIL_ABS(0, current_tsn.tsn_start_time, csma_timing[csma_ts_send_beacon_guard]);
 			  rsync_tsn(0,RTIMER_NOW());
 			  NETSTACK_RADIO.transmit(beacon_frame.len);
 		  }
@@ -701,7 +759,8 @@ PT_THREAD(tx_slot(struct pt *pt, struct rtimer *t))
 			  /*Error handling*/
 		  }
 	  }
-  }else if(current_tsn.tsn_value < 16)
+  }
+  else if(current_tsn.tsn_value < 16)
   {
 	  /*Callback to send neighbor buffer*/
   }
@@ -718,151 +777,11 @@ be_reset(void)
   reset_tsn();
   /* Reset timeslot timing to defaults */
   for(i = 0; i < csma_ts_elements_count; i++) {
-    csma_timing[i] = US_TO_RTIMERTICKS(csma_default_timing_us[i]);
+    csma_timing[i] = (rtimer_clock_t)(csma_default_timing_us[i]/US_IN_ONE_RTIMERTICK);
   }
 
 }
 
-static
-PT_THREAD(rx_slot(struct pt *pt, struct rtimer *t))
-{
-  /**
-   * RX slot:
-   * 1. Check if it is used for TIME_KEEPING
-   * 2. Sleep and wake up just before expected RX time (with a guard time: TS_LONG_GT)
-   * 3. Check for radio activity for the guard time: TS_LONG_GT
-   * 4. Prepare and send ACK if needed
-   * 5. Drift calculated in the ACK callback registered with the radio driver. Use it if receiving from a time source neighbor.
-   **/
-
-  PT_BEGIN(pt);
-
-  PT_END(pt);
-}
-
-/*---------------------------------------------------------------------------*/
-/* Protothread for slot operation, called from rtimer interrupt
- * and scheduled from tsch_schedule_slot_operation */
-static
-PT_THREAD(slot_operation(struct rtimer *t, void *ptr))
-{
-  PT_BEGIN(&slot_operation_pt);
-
-#if 0
-  /* Loop over all active slots */
-  while(tsch_is_associated) {
-
-    if(current_link == NULL || tsch_lock_requested) { /* Skip slot operation if there is no link
-                                                          or if there is a pending request for getting the lock */
-#if 0
-      /* Issue a log whenever skipping a slot */
-      TSCH_LOG_ADD(tsch_log_message,
-                      snprintf(log->message, sizeof(log->message),
-                          "!skipped slot %u %u %u",
-                            tsch_locked,
-                            tsch_lock_requested,
-                            current_link == NULL);
-      );
-#endif
-
-    } else {
-      int is_active_slot;
-      TSCH_DEBUG_SLOT_START();
-      be_in_slot_operation = 1;
-      /* Reset drift correction */
-      drift_correction = 0;
-      is_drift_correction_used = 0;
-      /* Get a packet ready to be sent */
-      current_packet = get_packet_and_neighbor_for_link(current_link, &current_neighbor);
-      /* There is no packet to send, and this link does not have Rx flag. Instead of doing
-       * nothing, switch to the backup link (has Rx flag) if any. */
-      if(current_packet == NULL && !(current_link->link_options & LINK_OPTION_RX) && backup_link != NULL) {
-        current_link = backup_link;
-        current_packet = get_packet_and_neighbor_for_link(current_link, &current_neighbor);
-      }
-      is_active_slot = current_packet != NULL || (current_link->link_options & LINK_OPTION_RX);
-      if(is_active_slot) {
-        /* Hop channel */
-        current_channel = tsch_calculate_channel(&tsch_current_asn, current_link->channel_offset);
-        NETSTACK_RADIO.set_value(RADIO_PARAM_CHANNEL, current_channel);
-        /* Turn the radio on already here if configured so; necessary for radios with slow startup */
-        tsch_radio_on(BE_RADIO_CMD_ON_START_OF_TIMESLOT);
-        /* Decide whether it is a TX/RX/IDLE or OFF slot */
-        /* Actual slot operation */
-        if(current_packet != NULL) {
-          /* We have something to transmit, do the following:
-           * 1. send
-           * 2. update_backoff_state(current_neighbor)
-           * 3. post tx callback
-           **/
-          static struct pt slot_tx_pt;
-          PT_SPAWN(&slot_operation_pt, &slot_tx_pt, tx_slot(&slot_tx_pt, t));
-        } else {
-          /* Listen */
-          static struct pt slot_rx_pt;
-          PT_SPAWN(&slot_operation_pt, &slot_rx_pt, rx_slot(&slot_rx_pt, t));
-        }
-      }
-    }
-
-    /* End of slot operation, schedule next slot or resynchronize */
-
-    /* Do we need to resynchronize? i.e., wait for EB again */
-    if(!tsch_is_coordinator && (TSCH_ASN_DIFF(tsch_current_asn, last_sync_asn) >
-        (100 * TSCH_CLOCK_TO_SLOTS(TSCH_DESYNC_THRESHOLD / 100, tsch_timing[tsch_ts_timeslot_length])))) {
-#if 0
-      TSCH_LOG_ADD(tsch_log_message,
-            snprintf(log->message, sizeof(log->message),
-                "! leaving the network, last sync %u",
-                          (unsigned)TSCH_ASN_DIFF(tsch_current_asn, last_sync_asn));
-      );
-#endif
-      last_timesource_neighbor = NULL;
-      tsch_disassociate();
-    } else {
-      /* backup of drift correction for printing debug messages */
-      /* int32_t drift_correction_backup = drift_correction; */
-      uint16_t timeslot_diff = 0;
-      rtimer_clock_t prev_slot_start;
-      /* Time to next wake up */
-      rtimer_clock_t time_to_next_active_slot;
-      /* Schedule next wakeup skipping slots if missed deadline */
-      do {
-        if(current_link != NULL
-            && current_link->link_options & LINK_OPTION_TX
-            && current_link->link_options & LINK_OPTION_SHARED) {
-          /* Decrement the backoff window for all neighbors able to transmit over
-           * this Tx, Shared link. */
-          tsch_queue_update_all_backoff_windows(&current_link->addr);
-        }
-
-        /* Get next active link */
-        current_link = tsch_schedule_get_next_active_link(&tsch_current_asn, &timeslot_diff, &backup_link);
-        if(current_link == NULL) {
-          /* There is no next link. Fall back to default
-           * behavior: wake up at the next slot. */
-          timeslot_diff = 1;
-        }
-        /* Update ASN */
-        TSCH_ASN_INC(tsch_current_asn, timeslot_diff);
-        /* Time to next wake up */
-        time_to_next_active_slot = timeslot_diff * tsch_timing[tsch_ts_timeslot_length] + drift_correction;
-        drift_correction = 0;
-        is_drift_correction_used = 0;
-        /* Update current slot start */
-        prev_slot_start = current_slot_start;
-        current_slot_start += time_to_next_active_slot;
-        current_slot_start += tsch_timesync_adaptive_compensate(time_to_next_active_slot);
-      } while(!tsch_schedule_slot_operation(t, prev_slot_start, time_to_next_active_slot, "main"));
-    }
-
-    tsch_in_slot_operation = 0;
-    PT_YIELD(&slot_operation_pt);
-  }
-#endif
-
-  PT_END(&slot_operation_pt);
-}
 int
 beacon_packet_create( uint8_t *buf, int buf_size )
 {
@@ -889,12 +808,37 @@ beacon_packet_create( uint8_t *buf, int buf_size )
   p.src_pid = frame802154_get_pan_id();
   p.dest_pid = frame802154_get_pan_id();
   linkaddr_copy((linkaddr_t *)&p.src_addr, &linkaddr_node_addr);
+  /*Send broadcast*/
   p.dest_addr[0] = 0xff;
   p.dest_addr[1] = 0xff;
 
   curr_len = frame802154_create(&p, buf);
 
   return curr_len;
+}
+
+static int
+prepare_beacon_frame( void )
+{
+	int beacon_len = 0;
+
+	packetbuf_clear();
+	packetbuf_set_attr(PACKETBUF_ATTR_FRAME_TYPE, FRAME802154_BEACONFRAME);
+
+	beacon_len = beacon_packet_create( (uint8_t *)packetbuf_dataptr(), (int)PACKETBUF_SIZE );
+
+	if( beacon_len > 0 ){
+		PRINTF("Beacon frame create succeded!\n");
+
+		packetbuf_set_datalen(beacon_len);
+
+		/*Store beacon frame in a local queue, it will be used later*/
+		beacon_frame_init();
+		beacon_frame.len = packetbuf_copyto(beacon_frame.data);
+		packetbuf_attr_copyto(beacon_frame.attrs, beacon_frame.addrs);
+	}
+
+	return beacon_len;
 }
 /*---------------------------------------------------------------------------*/
 /* Timing utility functions */
@@ -919,62 +863,16 @@ check_timer_miss(rtimer_clock_t ref_time, rtimer_clock_t offset, rtimer_clock_t 
     return now_has_overflowed;
   }
 }
-/*---------------------------------------------------------------------------*/
-/* Schedule a wakeup at a specified offset from a reference time.
- * Provides basic protection against missed deadlines and timer overflows
- * A return value of zero signals a missed deadline: no rtimer was scheduled. */
-static uint8_t
-schedule_slot_operation(struct rtimer *tm, rtimer_clock_t ref_time, rtimer_clock_t offset)
-{
+
+
+/*TODO: Remove
+ *
+ * It seems we don't need to generate beacon frame each time since we don't
+ * have any dynamic data to put in there.
+ *
+ * */
+
 #if 0
-  rtimer_clock_t now = RTIMER_NOW();
-  int r;
-  /* Subtract RTIMER_GUARD before checking for deadline miss
-   * because we can not schedule rtimer less than RTIMER_GUARD in the future */
-  int missed = check_timer_miss(ref_time, offset - RTIMER_GUARD, now);
-
-  if(missed) {
-    return 0;
-  }
-  ref_time += offset;
-  r = rtimer_set(tm, ref_time, 1, (void (*)(struct rtimer *, void *))slot_operation, NULL);
-  if(r != RTIMER_OK) {
-    return 0;
-  }
-#endif
-  return 1;
-}
-
-/* Set global time before starting slot operation,
- * with a rtimer time */
-void
-slot_operation_start(void)
-{
-#if 0
-  static struct rtimer slot_operation_timer;
-  rtimer_clock_t time_to_next_active_slot;
-  rtimer_clock_t prev_slot_start;
-
-  do {
-    uint16_t timeslot_diff;
-    /* Get next active link */
-    /*TODO: Do we need something like this?*/
-
-    current_link = schedule_get_next_active_link(&timeslot_diff);
-
-    if(current_link == NULL) {
-      /* There is no next link. Fall back to default
-       * behavior: wake up at the next slot. */
-      timeslot_diff = 1;
-    }
-    /* Time to next wake up */
-    time_to_next_active_slot = timeslot_diff * tsch_timing[tsch_ts_timeslot_length];
-    /* Update current slot start */
-    prev_slot_start = current_slot_start;
-    current_slot_start += time_to_next_active_slot;
-  } while(!schedule_slot_operation(&slot_operation_timer, prev_slot_start, time_to_next_active_slot, "association"));
-#endif
-}
 
 /*
  * Description: A periodic process to send beacon frames when using Beacon-Enabled (BE) mode.
@@ -1127,6 +1025,27 @@ PROCESS_THREAD(beacon_process, ev, data)
 
 	PROCESS_END();
 }
+
+#endif
+
+
+static
+PT_THREAD(rx_slot(struct pt *pt, struct rtimer *t))
+{
+  /**
+   * RX slot:
+   * 1. Check if it is used for TIME_KEEPING
+   * 2. Sleep and wake up just before expected RX time (with a guard time: TS_LONG_GT)
+   * 3. Check for radio activity for the guard time: TS_LONG_GT
+   * 4. Prepare and send ACK if needed
+   * 5. Drift calculated in the ACK callback registered with the radio driver. Use it if receiving from a time source neighbor.
+   **/
+
+  PT_BEGIN(pt);
+
+  PT_END(pt);
+}
+
 /* Protothread for updating TSN information, called from rtimer interrupt
  * and scheduled from tsn_update_schedule */
 static
@@ -1146,19 +1065,27 @@ PT_THREAD(tsn_update(struct rtimer *t))
 	  increment_tsn( RTIMER_NOW() );
 
 	  is_valid_tsn = get_tsn_start_time(&curr_start_time) && get_tsn_value(&curr_tsn);
-	  if( is_valid_tsn == TRUE ){
-		  if( curr_tsn == 0 ){ /*Beacon Frame*/
+
+	  if( is_valid_tsn == TRUE )
+	  {
+		  if( curr_tsn == 0 )  /*Beacon Frame*/
+		  {
 			  active_period = TRUE;
 			  NETSTACK_RADIO.on();
-			  if( be_is_coordinator ){
-				  /*send_beacon task spawn*/
+			  if( be_is_coordinator )
+			  {
+				  /*send_beacon PT spawn*/
 				  static struct pt slot_tx_pt;
 				  PT_SPAWN(&tsn_update_pt, &slot_tx_pt, tx_slot(&slot_tx_pt, t));
 			  }
-			  else{
-				  /*read_beacon_task_spawn*/
+			  else
+			  {
+				  /*beacon read PT spawn*/
+				  //static struct pt beacon_rx_pt;
+				  //PT_SPAWN(&tsn_update_pt, &beacon_rx_pt, beacon_rx(&beacon_rx_pt));
 			  }
-		  }else if( (curr_tsn <= LAST_ACTIVE_TS) )
+		  }
+		  else if( (curr_tsn <= LAST_ACTIVE_TS) )
 		  {
 			  if(nq != NULL) {
 				/* We have something to transmit, do the following:
@@ -1177,24 +1104,32 @@ PT_THREAD(tsn_update(struct rtimer *t))
 		  }
 
 
-		  if(curr_tsn == LAST_ACTIVE_TS ){
+		  if(curr_tsn == LAST_ACTIVE_TS )
+		  {
 			  prepare_for_inactive = TRUE;
-		  }else if( curr_tsn == FIRST_INACTIVE_TS ){
+		  }
+		  else if( curr_tsn == FIRST_INACTIVE_TS )
+		  {
 			  active_period = FALSE;
 			  NETSTACK_RADIO.off();
-		  }else if( curr_tsn == LAST_INACTIVE_TS){
+		  }
+		  else if( curr_tsn == LAST_INACTIVE_TS)
+		  {
 			  prepare_for_active = TRUE;
 		  }
 
-		  if( curr_tsn < 16 ){
-			  time_to_next_ts = csma_timing[csma_ts_active_length];
-		  }else{
+		  if( curr_tsn < 16 )
+		  {
 			  time_to_next_ts = csma_timing[csma_ts_active_length];
 		  }
+		  else
+		  {
+			  time_to_next_ts = csma_timing[csma_ts_inactive_length];
+		  }
 
-		  if( curr_tsn == LAST_INACTIVE_TS){
-			  if( be_is_coordinator )
-				  time_to_next_ts -= csma_timing[csma_ts_send_beacon_guard];
+		  if( curr_tsn == LAST_INACTIVE_TS)
+		  {
+			  time_to_next_ts -= csma_timing[csma_ts_send_beacon_guard];
 		  }
 
 		  /*Do we have something to send in the next time slot?*/
@@ -1204,6 +1139,7 @@ PT_THREAD(tsn_update(struct rtimer *t))
 
 		  if(!scheduled){
 			  /*Error handling*/
+			  PRINTF(" *!!\n");
 		  }
 
 	  }
@@ -1220,14 +1156,15 @@ tsn_update_schedule(struct rtimer *tm, rtimer_clock_t ref_time, rtimer_clock_t o
 	rtimer_clock_t now = RTIMER_NOW();
 	int missed = check_timer_miss(ref_time, offset - RTIMER_GUARD, now);
 
-	PRINTF("TSN_sch: %d, rtimer=%u\n",current_tsn.tsn_value, current_tsn.tsn_start_time);
 	if(missed) {
-	  PRINTF(" !\n");
+	  PRINTF(" *!\n");
 	  return 0;
 	}
 	ref_time += offset;
 	r = rtimer_set(tm, ref_time , 1, (void (*)(struct rtimer *))tsn_update, NULL);
+
 	if(r != RTIMER_OK) {
+		PRINTF(" *!!\n");
 		return 0;
 	}
 	return 1;
@@ -1244,10 +1181,10 @@ tsn_update_start( void )
 	PRINTF("tsn_update_start\n");
 
 	do{
-		time_to_next_ts = csma_timing[csma_ts_active_length];
 		if( !get_tsn_value(&curr_tns) || !get_tsn_start_time(&prev_ts_start) ){
 			return;	/*Invalid TNS or start time value*/
 		}
+		time_to_next_ts = csma_timing[csma_ts_active_length];
 	}while( !tsn_update_schedule(&tsn_update_timer, prev_ts_start, time_to_next_ts) );
 }
 
@@ -1277,6 +1214,7 @@ PROCESS_THREAD(keep_tsn_process, ev, data){
 	static struct etimer tsn_timer;
 	static rtimer_clock_t curr_start_time;
 	static curr_tsn = TSN_INVALID;
+	static int success;
 
 	PROCESS_BEGIN();
 	/* Set the timer to send beacons periodically */
@@ -1284,16 +1222,27 @@ PROCESS_THREAD(keep_tsn_process, ev, data){
 
 	PRINTF("TNS_PROCESS\n");
 
-	while(_ALWAYS_){
-		while(!be_is_associated){
-			if(be_is_coordinator) {
-				/* We are coordinator, start operating now */
-				start_coordinator();
-			} else {
-				/* Start scanning, will attempt to join when receiving an EB */
+	while(_ALWAYS_)
+	{
+		while(!be_is_associated)
+		{
+			if(be_is_coordinator) /* We are coordinator, start operating now */
+			{
+				if( prepare_beacon_frame() )
+				{
+					start_coordinator();
+				}
+				else /*Failed to create a beacon frame, abort!*/
+				{
+					break;
+				}
+			}
+			else/* Start scanning, will attempt to join when receiving an EB */
+			{
 				static struct pt scan_pt;
 				PROCESS_PT_SPAWN(&scan_pt, beacon_scan(&scan_pt));
 			}
+
 			if(!be_is_associated){
 				etimer_reset(&tsn_timer);
 				PROCESS_WAIT_UNTIL(etimer_expired(&tsn_timer));
@@ -1311,71 +1260,8 @@ PROCESS_THREAD(keep_tsn_process, ev, data){
 
 	PROCESS_END();
 }
-/* The main process */
 
 
-/*
- *  Association: First action is to ensure that we get associated to a network, if this node is a
- *               coordinator we just need to set PAN ID parameters, if it is a RFD, need to wait
- *               for a beacon frame to arrive.
- *
- *
- * 	PAN-Coordinator: Only receives data and pass it to upper layers, if we have RX_POLL disabled,
- * 	                 we don't need to do anything else since it will be handled automatically
- * 	                 by the radio layer when a packet arrives.
- *
- * 	                 We need to evaluate if we need to configure the RADIO RX in poll mode during
- * 	                 the timeslot 0 when we expect to receive a beacon frame to avoid passing
- * 	                 that input frame to upper layers.
- *
- * 	RFD: After a successful association process we need to:
- * 		1. Yield process until active_period is TRUE
- * 		2. Call start_slot_op()
- * 		3. Yield until active_period is false. This means that now we just need to wait
- * 		   for the next beacon frame.
- * 		4. Yield until wait_for_beacon is TRUE, this flag is activated "some ms after" we expect
- * 		   to receive a beacon frame.
- * 		5. scan_beacon() procedure, can we define a new or reuse the existing protothread to do this?
- * 		6. Go back to step 1
- *
- *   slot_operation:
- * 				1.1. if time slot number (TSN) is zero, we are in the beacon time slot.
- * 					1.1.2 Get next TSN active and schedule  wakeup in that TSN.
- * 					1.1.3 If not TSN active found, go to default behavior and schedule a wakeup TSN+1
- * 				1.2. if (TSN != 0)
- * 					1.2.1
- *
- */
-PROCESS_THREAD(main_process, ev, data)
-{
-  static struct pt scan_pt;
-
-  PROCESS_BEGIN();
-
-  while(_ALWAYS_) {
-
-    while(!be_is_associated) {
-      if(be_is_coordinator) {
-        /* We are coordinator, start operating now */
-        start_coordinator();
-      } else {
-        /* Start scanning, will attempt to join when receiving an EB */
-        PROCESS_PT_SPAWN(&scan_pt, beacon_scan(&scan_pt));
-      }
-    }
-
-    /* We are part of a PAN-BE network, start slotted CSMA operation */
-    slot_operation_start();
-
-    /* Yield our main process. Slot operation will re-schedule itself
-     * as long as we are associated */
-    PROCESS_YIELD_UNTIL(!be_is_associated);
-
-    /* Will need to re-synchronize */
-    be_reset();
-  }
-  PROCESS_END();
-}
 
 /*
  * Unslotted CSMA functions
@@ -1734,10 +1620,8 @@ on(void)
 
   if( be_is_started == FALSE) {
 	be_is_started = 1;
-	/* Process tx/rx callback  whenever polled */
-	//process_start(&be_pending_events_process, NULL);
-	/* Send Beacon frames if it is the coordinator */
-	//process_start(&beacon_process, NULL);
+
+#if 0
 
 	/* Prepare the EB packet and schedule it to be sent */
 	int beacon_len;
@@ -1760,6 +1644,13 @@ on(void)
 		/* try to associate to a network or start one if setup as coordinator */
 		process_start(&keep_tsn_process, NULL);
 	}
+	/* try to associate to a network or start one if setup as coordinator */
+	process_start(&keep_tsn_process, NULL);
+
+#endif
+	/* try to associate to a network or start one if setup as coordinator */
+	process_start(&keep_tsn_process, NULL);
+
 	return 1;
   }
   return 0;
@@ -1788,15 +1679,15 @@ static void
 init(void)
 {
 	PRINTF("SCSMA init\n");
+	PRINTF("RTIMER_TO_uS: %d\n",RTIMERTICKS_TO_US(1));
+	PRINTF("uS_TO_RTIMER: %d\n",US_TO_RTIMERTICKS(128));
+	PRINTF("rtimer_clock_t : %d bytes", sizeof(rtimer_clock_t));
 	memb_init(&packet_memb);
 	memb_init(&metadata_memb);
 	memb_init(&neighbor_memb);
 	beacon_frame_init();
 	disable_RX_poll_mode();
-	reset_tsn();
 	be_reset();
-
-
 	on();
 
 }
