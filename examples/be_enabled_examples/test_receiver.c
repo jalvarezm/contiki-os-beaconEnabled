@@ -73,7 +73,7 @@ PROCESS_THREAD(broadcast_process, ev, data)
 
 	  broadcast_open(&broadcast, 129, &broadcast_call);
 
-	  setCoordinator(0);
+	  unset_coordinator();
 	  printf("RFD Device is set and running...");
 
 	  while(1) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, Swedish Institute of Computer Science.
+ * Copyright (c) 2016, Inria.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,63 +32,42 @@
 
 /**
  * \file
- *         Testing the broadcast layer in Rime
+ *         Project config file
  * \author
- *         Adam Dunkels <adam@sics.se>
+ *         Simon Duquennoy <simon.duquennoy@inria.fr>
+ *
  */
 
-#include "contiki.h"
-#include "net/rime/rime.h"
-#include "random.h"
-#include "net/mac/csma.h"
-#include "dev/button-sensor.h"
-
-#include "dev/leds.h"
-
-#include <stdio.h>
-
-/*---------------------------------------------------------------------------*/
-PROCESS(example_broadcast_process, "Broadcast example");
-AUTOSTART_PROCESSES(&example_broadcast_process);
-/*---------------------------------------------------------------------------*/
-static void
-broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
-{
-
-  printf("broadcast message received from %d.%d: '%s'\n",
-         from->u8[0], from->u8[1], (char *)packetbuf_dataptr());
-
-}
-static const struct broadcast_callbacks broadcast_call = {broadcast_recv};
-
-static struct broadcast_conn broadcast;
-/*---------------------------------------------------------------------------*/
-PROCESS_THREAD(example_broadcast_process, ev, data)
-{
-  static struct etimer et;
-
-  PROCESS_EXITHANDLER(broadcast_close(&broadcast);)
-
-  PROCESS_BEGIN();
-
-  broadcast_open(&broadcast, 129, &broadcast_call);
-
-  set_coordinator();
-  printf("FFD Device is set and running...");
-
-  while(1) {
-      
-    /* Delay 2-4 seconds */
-    etimer_set(&et, CLOCK_SECOND );
-    PROCESS_WAIT_UNTIL(etimer_expired(&et));
+#ifndef __PROJECT_CONF_H__
+#define __PROJECT_CONF_H__
 
 #if 0
-    packetbuf_copyfrom("beacon", 7);
-    broadcast_send(&broadcast);
+/* Netstack layers */
+#undef NETSTACK_CONF_MAC
+#define NETSTACK_CONF_MAC     tschmac_driver
+#undef NETSTACK_CONF_RDC
+#define NETSTACK_CONF_RDC     nordc_driver
+#undef NETSTACK_CONF_FRAMER
+#define NETSTACK_CONF_FRAMER  framer_802154
 #endif
-    //printf("broadcast message sent\n");
-  }
 
-  PROCESS_END();
-}
-/*---------------------------------------------------------------------------*/
+#undef CC2420_CONF_SFD_TIMESTAMPS
+#define CC2420_CONF_SFD_TIMESTAMPS       1
+
+/* TSCH logging. 0: disabled. 1: basic log. 2: with delayed
+ * log messages from interrupt */
+#undef TSCH_LOG_CONF_LEVEL
+#define TSCH_LOG_CONF_LEVEL 2
+
+/* IEEE802.15.4 PANID */
+#undef IEEE802154_CONF_PANID
+#define IEEE802154_CONF_PANID 0xabcd
+
+
+
+#if CONTIKI_TARGET_COOJA
+#define COOJA_CONF_SIMULATE_TURNAROUND 0
+#endif /* CONTIKI_TARGET_COOJA */
+
+
+#endif /* __PROJECT_CONF_H__ */
