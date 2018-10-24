@@ -158,8 +158,8 @@
 #define IEEE802154_BSD			(15300)
 #define NUM_SUPERFRAME_SLOTS	(16)
 
-#define IEEE802154_DEFAULT_BO	(9)
-#define IEEE802154_DEFAULT_SO	(7)
+#define IEEE802154_DEFAULT_BO	(10)
+#define IEEE802154_DEFAULT_SO	(9)
 
 /* Calculate 2^(n) using bit shifting */
 #define PWR2(n)	(((n) > 0) ? (2<<((n)-1)) : (2))
@@ -586,7 +586,7 @@ rsync_tsn( const uint8_t tsn_ref, const rtimer_clock_t now )
 	current_tsn.tsn_value = tsn_ref;
 	current_tsn.tsn_start_time = now;
 	current_tsn.is_tsn_start_time_set = TRUE;
-	PRINTF("TSN_sync: %d st: %u\n",current_tsn.tsn_value, current_tsn.tsn_start_time);
+	//PRINTF("TSN_sync: %d st: %u\n",current_tsn.tsn_value, current_tsn.tsn_start_time);
 }
 static void
 reset_tsn( void )
@@ -602,14 +602,14 @@ increment_tsn( const rtimer_clock_t next_tsn_start_value )
 {
 	current_tsn.tsn_value = (current_tsn.tsn_value + 1) % MAX_TSN_VALUE;
 	current_tsn.tsn_start_time = next_tsn_start_value;
-	PRINTF("TSN_inc: %d timestamp:%u\n",current_tsn.tsn_value, next_tsn_start_value);
+	//PRINTF("TSN_inc: %d timestamp:%u\n",current_tsn.tsn_value, next_tsn_start_value);
 }
 /*****************************************************************************
  * 							SCHEDULING FUNCTIONS
  ****************************************************************************/
 
 uint8_t
-disable_RX_poll_mode( void )
+enable_RX_poll_mode( void )
 {
 	radio_value_t radio_rx_mode;
 
@@ -834,14 +834,11 @@ PT_THREAD(tsn_update(struct rtimer *t, void *ptr))
 
   while( be_is_associated )
   {
-	  //increment_tsn( RTIMER_NOW() );
+	  increment_tsn( RTIMER_NOW() );
 
-	  current_tsn.tsn_value = (current_tsn.tsn_value + 1) % MAX_TSN_VALUE;
-	  current_tsn.tsn_start_time = RTIMER_NOW();
-	  PRINTF("TSN_inc: %d timestamp:%u\n",current_tsn.tsn_value, RTIMER_NOW());
+	  //PRINTF("TSN_inc: %d timestamp:%u\n",current_tsn.tsn_value, RTIMER_NOW());
 
 	  is_valid_tsn = get_tsn_start_time(&curr_start_time) && get_tsn_value(&curr_tsn);
-	  //is_valid_tsn = (current_tsn.is_tsn_start_time_set) && (current_tsn.tsn_value < 32);
 
 	  if( is_valid_tsn == TRUE )
 	  {
@@ -858,7 +855,7 @@ PT_THREAD(tsn_update(struct rtimer *t, void *ptr))
 			  else
 			  {
 				  /*beacon read PT spawn*/
-				  //current_tsn.tsn_start_time += csma_timing[csma_ts_send_beacon_guard];
+				  current_tsn.tsn_start_time += csma_timing[csma_ts_send_beacon_guard];
 				  BUSYWAIT_UNTIL_ABS(0, current_tsn.tsn_start_time, csma_timing[csma_ts_send_beacon_guard]);
 				  //static struct pt beacon_rx_pt;
 				  //PT_SPAWN(&tsn_update_pt, &beacon_rx_pt, beacon_rx(&beacon_rx_pt));
@@ -917,7 +914,7 @@ PT_THREAD(tsn_update(struct rtimer *t, void *ptr))
 		  scheduled = tsn_update_schedule(t, curr_start_time, time_to_next_ts);
 
 		  if(!scheduled){
-			  /*Error handling*/
+			  /*TODO Error handling*/
 			  PRINTF(" *!!\n");
 		  }
 
@@ -1004,7 +1001,7 @@ PT_THREAD(beacon_scan(struct pt *pt))
 			/* At the end of the reception, get an more accurate estimate of SFD arrival time */
 			NETSTACK_RADIO.get_object(RADIO_PARAM_LAST_PACKET_TIMESTAMP, &rx_start_time, sizeof(rtimer_clock_t));
 			rx_start_time += csma_timing[csma_ts_send_beacon_guard]+100;
-			//rsync_tsn( 0, rx_start_time  );
+			rsync_tsn( 0, rx_start_time  );
 
 			current_tsn.tsn_value = 0;
 			current_tsn.tsn_start_time = rx_start_time;
@@ -1593,7 +1590,7 @@ init(void)
 		return;
 	}
 
-	if( disable_RX_poll_mode() == FALSE )
+	if( enable_RX_poll_mode() == FALSE )
 	{
 		return;
 	}
