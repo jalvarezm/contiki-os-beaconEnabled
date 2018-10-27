@@ -101,8 +101,8 @@
       <breakpoints />
       <interface_config>
         org.contikios.cooja.interfaces.Position
-        <x>33.312204243398355</x>
-        <y>58.461683018719064</y>
+        <x>40.10624797019376</x>
+        <y>45.6888808123437</y>
         <z>0.0</z>
       </interface_config>
       <interface_config>
@@ -133,6 +133,24 @@
       </interface_config>
       <motetype_identifier>z12</motetype_identifier>
     </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>23.19038943305472</x>
+        <y>67.04748710654638</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.mspmote.interfaces.MspClock
+        <deviation>1.0</deviation>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.mspmote.interfaces.MspMoteID
+        <id>5</id>
+      </interface_config>
+      <motetype_identifier>z12</motetype_identifier>
+    </mote>
   </simulation>
   <plugin>
     org.contikios.cooja.plugins.SimControl
@@ -150,7 +168,7 @@
       <skin>org.contikios.cooja.plugins.skins.GridVisualizerSkin</skin>
       <skin>org.contikios.cooja.plugins.skins.TrafficVisualizerSkin</skin>
       <skin>org.contikios.cooja.plugins.skins.UDGMVisualizerSkin</skin>
-      <viewport>4.5203905342306125 0.0 0.0 4.5203905342306125 125.09866997302092 -23.64224759568158</viewport>
+      <viewport>3.679693714863965 0.0 0.0 3.679693714863965 19.664912841923893 -35.98694417610868</viewport>
     </plugin_config>
     <width>400</width>
     <z>1</z>
@@ -166,7 +184,7 @@
       <coloring />
     </plugin_config>
     <width>760</width>
-    <z>4</z>
+    <z>3</z>
     <height>240</height>
     <location_x>400</location_x>
     <location_y>160</location_y>
@@ -178,13 +196,14 @@
       <mote>1</mote>
       <mote>2</mote>
       <mote>3</mote>
+      <mote>4</mote>
       <showRadioRXTX />
       <showRadioHW />
       <showLEDs />
       <zoomfactor>100000.0</zoomfactor>
     </plugin_config>
     <width>1160</width>
-    <z>3</z>
+    <z>2</z>
     <height>166</height>
     <location_x>0</location_x>
     <location_y>426</location_y>
@@ -196,7 +215,7 @@
       <decorations>true</decorations>
     </plugin_config>
     <width>480</width>
-    <z>2</z>
+    <z>4</z>
     <height>160</height>
     <location_x>680</location_x>
     <location_y>0</location_y>

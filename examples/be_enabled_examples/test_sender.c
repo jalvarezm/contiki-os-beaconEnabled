@@ -82,10 +82,6 @@ PROCESS_THREAD(example_broadcast_process, ev, data)
     etimer_set(&et, CLOCK_SECOND );
     PROCESS_WAIT_UNTIL(etimer_expired(&et));
 
-#if 0
-    packetbuf_copyfrom("beacon", 7);
-    broadcast_send(&broadcast);
-#endif
     //printf("broadcast message sent\n");
   }
 

@@ -159,7 +159,7 @@
 #define NUM_SUPERFRAME_SLOTS	(16)
 
 #define IEEE802154_DEFAULT_BO	(10)
-#define IEEE802154_DEFAULT_SO	(9)
+#define IEEE802154_DEFAULT_SO	(7)
 
 /* Calculate 2^(n) using bit shifting */
 #define PWR2(n)	(((n) > 0) ? (2<<((n)-1)) : (2))
@@ -172,11 +172,15 @@
 #define LAST_INACTIVE_TS	(31)
 #define FIRST_INACTIVE_TS	(16)
 
+#define MAX_ACTIVE_TSN		(16) /*Used to schedule CSMA send operation*/
+
 
 /* TSN value used when we are not in slotted CSMA operation */
 #define MAX_TSN_VALUE	(32)
 #define TSN_INVALID		(0xFF) /* This node has not been associated */
 #define TSN_INACTIVE	(0xFE) /* This node is associated but in the inactive period*/
+
+#define BACKOFF_PERIOD	(1)	   /* Backoff period for slotted CSMA is one timeslot */
 
 /* Calculate packet tx/rx duration in rtimer ticks based on sent
  * packet len in bytes with 802.15.4 250kbps data rate.
@@ -342,8 +346,7 @@ static int active_period = FALSE;
 static int prepare_for_active = FALSE;
 /*Flag that indicates next time slot the active period will start*/
 static int prepare_for_inactive = FALSE;
-/* Did we received the beacon frame correctly?*/
-static int beacon_recv = FALSE;
+
 
 
 #define MAX_QUEUED_PACKETS QUEUEBUF_NUM
@@ -353,11 +356,9 @@ MEMB(metadata_memb, struct qbuf_metadata, MAX_QUEUED_PACKETS);
 LIST(neighbor_list);
 
 PROCESS(keep_tsn_process, "PAN-BE: Keep information about time slot number during BE operation");
+PROCESS(pending_send_process, "PAN_BE: pending send events process");
 static PT_THREAD(tsn_update(struct rtimer *t, void *ptr));
 static struct pt tsn_update_pt;
-
-static PT_THREAD(beacon_tx(struct pt *pt));
-
 /*
  *	Function prototypes
  */
@@ -372,8 +373,6 @@ static struct neighbor_queue * next_slot_nq	( const uint8_t tsn );
 
 static uint8_t get_tsn_start_time	(rtimer_clock_t * tns_start_time);
 static uint8_t get_tsn_value	 	(uint8_t * tsn);
-static void    set_tsn_start_time	(const rtimer_clock_t tns_start_time);
-static void    set_tsn_value		(const uint8_t tsn);
 static void    rsync_tsn			(const uint8_t tsn_ref, const rtimer_clock_t now);
 static void    reset_tsn			(void);
 
@@ -537,7 +536,6 @@ static struct neighbor_queue *
 next_slot_nq ( const uint8_t tsn )
 {
 	struct neighbor_queue *n = NULL;
-
 	if( (tsn > 0) && (tsn <= LAST_ACTIVE_TS) ){
 		n = list_head(neighbor_list);
 		while(n != NULL) {
@@ -567,18 +565,6 @@ get_tsn_value(uint8_t * tsn)
 
 }
 
-static void
-set_tsn_start_time(const rtimer_clock_t tsn_start_time)
-{
-	current_tsn.tsn_start_time = tsn_start_time ;
-	current_tsn.is_tsn_start_time_set = TRUE;
-}
-
-static void
-set_tsn_value(const uint8_t tsn)
-{
-	current_tsn.tsn_value = tsn;
-}
 
 static void
 rsync_tsn( const uint8_t tsn_ref, const rtimer_clock_t now )
@@ -633,6 +619,31 @@ enable_RX_poll_mode( void )
 }
 
 uint8_t
+disable_RX_poll_mode( void )
+{
+	radio_value_t radio_rx_mode;
+
+	/* Radio Rx mode */
+	if(NETSTACK_RADIO.get_value(RADIO_PARAM_RX_MODE, &radio_rx_mode) != RADIO_RESULT_OK) {
+		printf("WARN:! radio does not support getting RADIO_PARAM_RX_MODE. Abort init.\n");
+		return FALSE;
+	}
+	/* Enable radio in frame filtering */
+	radio_rx_mode |= RADIO_RX_MODE_ADDRESS_FILTER;
+	/* Set autoack */
+	radio_rx_mode |= RADIO_RX_MODE_AUTOACK;
+	/* Unset radio in poll mode */
+	radio_rx_mode &= ~RADIO_RX_MODE_POLL_MODE;
+
+	if(NETSTACK_RADIO.set_value(RADIO_PARAM_RX_MODE, radio_rx_mode) != RADIO_RESULT_OK) {
+		printf("WARN:! radio does not support setting required RADIO_PARAM_RX_MODE. Abort init.\n");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+uint8_t
 test_radio_timestamp( void )
 {
 	rtimer_clock_t t;
@@ -669,65 +680,7 @@ start_coordinator(void)
 
 
 static void packet_sent(void *ptr, int status, int num_transmissions);
-#if 0
 static void transmit_packet_list(void *ptr);
-#endif
-
-static void
-packet_sent(void *ptr, int status, int num_transmissions)
-{
-#if 0
-	struct neighbor_queue *n;
-	struct rdc_buf_list *q;
-
-	n = ptr;
-	if(n == NULL) {
-		return;
-	}
-
-	/* Find out what packet this callback refers to */
-	for(q = list_head(n->queued_packet_list);
-			q != NULL; q = list_item_next(q)) {
-		if(queuebuf_attr(q->buf, PACKETBUF_ATTR_MAC_SEQNO) ==
-				packetbuf_attr(PACKETBUF_ATTR_MAC_SEQNO)) {
-			break;
-		}
-	}
-
-	if(q == NULL) {
-		PRINTF("csma: seqno %d not found\n",
-				packetbuf_attr(PACKETBUF_ATTR_MAC_SEQNO));
-		return;
-	} else if(q->ptr == NULL) {
-		PRINTF("csma: no metadata\n");
-		return;
-	}
-
-	switch(status) {
-	case MAC_TX_OK:
-		PRINTF("MAC_TX_OK - ");
-		/*tx_ok(q, n, num_transmissions);*/
-		break;
-	case MAC_TX_NOACK:
-		PRINTF("MAC_TX_NOACK - ");
-		/*noack(q, n, num_transmissions);*/
-		break;
-	case MAC_TX_COLLISION:
-		PRINTF("MAC_TX_COLLISION - ");
-		/*collision(q, n, num_transmissions);*/
-		break;
-	case MAC_TX_DEFERRED:
-		PRINTF("MAC_TX_DEFERRED - ");
-		break;
-	default:
-		PRINTF("tx_done() -");
-
-		/*tx_done(status, q, n);*/
-		break;
-	}
-#endif
-}
-
 
 
 /*---------------------------------------------------------------------------*/
@@ -753,9 +706,10 @@ PT_THREAD(tx_slot(struct pt *pt, struct rtimer *t))
 		  }
 	  }
   }
-  else if(current_tsn.tsn_value < 16)
+  else if((current_tsn.tsn_value < 16) && (nq != NULL))
   {
-	  /*Callback to send neighbor buffer*/
+	  /* Poll process for send all the packets in the neighbor buffer */
+	  process_poll(&pending_send_process);
   }
 
   PT_END(pt);
@@ -800,7 +754,7 @@ check_timer_miss(rtimer_clock_t ref_time, rtimer_clock_t offset, rtimer_clock_t 
 }
 
 
-
+#if 0
 static
 PT_THREAD(rx_slot(struct pt *pt, struct rtimer *t))
 {
@@ -817,6 +771,7 @@ PT_THREAD(rx_slot(struct pt *pt, struct rtimer *t))
 
   PT_END(pt);
 }
+#endif
 
 /* Protothread for updating TSN information, called from rtimer interrupt
  * and scheduled from tsn_update_schedule */
@@ -870,12 +825,6 @@ PT_THREAD(tsn_update(struct rtimer *t, void *ptr))
 				 **/
 				static struct pt slot_tx_pt;
 				PT_SPAWN(&tsn_update_pt, &slot_tx_pt, tx_slot(&slot_tx_pt, t));
-			  } else {
-				/* Listen ?*/
-#if 0
-				static struct pt slot_rx_pt;
-				PT_SPAWN(&tsn_update_pt, &slot_rx_pt, rx_slot(&slot_rx_pt, t));
-#endif
 			  }
 		  }
 
@@ -883,6 +832,7 @@ PT_THREAD(tsn_update(struct rtimer *t, void *ptr))
 		  if(curr_tsn == LAST_ACTIVE_TS )
 		  {
 			  prepare_for_inactive = TRUE;
+			  disable_RX_poll_mode();
 		  }
 		  else if( curr_tsn == FIRST_INACTIVE_TS )
 		  {
@@ -892,6 +842,7 @@ PT_THREAD(tsn_update(struct rtimer *t, void *ptr))
 		  else if( curr_tsn == LAST_INACTIVE_TS)
 		  {
 			  prepare_for_active = TRUE;
+			  enable_RX_poll_mode();
 		  }
 
 		  if( curr_tsn < 16 )
@@ -954,6 +905,9 @@ tsn_update_start( void )
 	uint8_t curr_tns;
 
 	PRINTF("tsn_update_start\n");
+
+	/*Prepare for slotted CSMA*/
+	disable_RX_poll_mode();
 
 	do{
 		if( !get_tsn_value(&curr_tns) || !get_tsn_start_time(&prev_ts_start) ){
@@ -1046,6 +1000,8 @@ PT_THREAD(beacon_scan(struct pt *pt))
 /* Reading protothread, called by be_process:
  * Listen until it receives a beacon frame within the active timeslot 0
  */
+#if 0
+/* Disabled, since it is not working properly */
 static
 PT_THREAD(beacon_rx(struct pt *pt))
 {
@@ -1115,6 +1071,7 @@ PT_THREAD(beacon_rx(struct pt *pt))
 
   PT_END(pt);
 }
+#endif
 
 /* Process to keep TSN data updated */
 
@@ -1125,15 +1082,13 @@ PT_THREAD(beacon_rx(struct pt *pt))
  *	             It does nothing until be_is_associated is true.
  *
  *	             active_period   -> 0  <= tsn_value < 16
- *	             inactive_period -> 16 < tsn_value < 32
+ *	             inactive_period -> 16 <= tsn_value < 32
  *
  *	Steps:
  *		1. While !be_is_associated, wait one clock_t using etimer.
  *		2. Call start_tsn_update().
- *		3. Yield until (!be_is_associated), it means we need to sync and start again.
- *
- *
- *
+ *		3. Yield until (!be_is_associated), it means we need to sync and start again
+ *		   because we lost beacon frame tracking.
  *
  */
 
@@ -1165,6 +1120,7 @@ PROCESS_THREAD(keep_tsn_process, ev, data){
 			else/* Start scanning, will attempt to join when receiving an EB */
 			{
 				static struct pt scan_pt;
+				enable_RX_poll_mode();
 				PROCESS_PT_SPAWN(&scan_pt, beacon_scan(&scan_pt));
 			}
 
@@ -1182,13 +1138,30 @@ PROCESS_THREAD(keep_tsn_process, ev, data){
 		 PRINTF("keep_tsn_process YIELD!\n");
 		 PROCESS_YIELD_UNTIL(!be_is_associated);
 
-		/*TODO: Do we need some cleanup here?*/
 	}
 
 	PROCESS_END();
 }
 
+PROCESS_THREAD(pending_send_process, ev, data)
+{
+  PROCESS_BEGIN();
+  while( _ALWAYS_ ) {
+    PROCESS_YIELD_UNTIL(ev == PROCESS_EVENT_POLL);
 
+    /*
+     * Only RFD can transmit when there is something in
+     * the transmit queue
+     */
+    if( active_period 		&&
+    	!be_is_coordinator)
+    {
+		PRINTF("Sending data! \n");
+    	transmit_packet_list(nq);
+    }
+  }
+  PROCESS_END();
+}
 
 /*
  * Unslotted CSMA functions
@@ -1209,24 +1182,7 @@ neighbor_queue_from_addr(const linkaddr_t *addr)
 	return NULL;
 }
 
-#if 0
-/*---------------------------------------------------------------------------*/
-static clock_time_t
-backoff_period(void)
-{
-	clock_time_t time;
-	/* The retransmission time must be proportional to the channel
-     check interval of the underlying radio duty cycling layer. */
-	time = NETSTACK_RDC.channel_check_interval();
 
-	/* If the radio duty cycle has no channel check interval, we use
-	 * the default in IEEE 802.15.4: aUnitBackoffPeriod which is
-	 * 20 symbols i.e. 320 usec. That is, 1/3125 second. */
-	if(time == 0) {
-		time = MAX(CLOCK_SECOND / 3125, 1);
-	}
-	return time;
-}
 /*---------------------------------------------------------------------------*/
 static void
 transmit_packet_list(void *ptr)
@@ -1243,25 +1199,34 @@ transmit_packet_list(void *ptr)
 	}
 }
 /*---------------------------------------------------------------------------*/
+
+/* Version used when trying to get slotted CSMA to work */
 static void
 schedule_transmission(struct neighbor_queue *n)
 {
 	clock_time_t delay;
 	int backoff_exponent; /* BE in IEEE 802.15.4 */
+	uint8_t scheduled_tsn;
 
 	backoff_exponent = MIN(n->collisions, CSMA_MAX_BE);
 
 	/* Compute max delay as per IEEE 802.15.4: 2^BE-1 backoff periods  */
-	delay = ((1 << backoff_exponent) - 1) * backoff_period();
+	delay = ((1 << backoff_exponent) - 1) * BACKOFF_PERIOD;
 	if(delay > 0) {
 		/* Pick a time for next transmission */
 		delay = random_rand() % delay;
 	}
 
-	PRINTF("csma: scheduling transmission in %u ticks, NB=%u, BE=%u\n",
-			(unsigned)delay, n->collisions, backoff_exponent);
-	ctimer_set(&n->transmit_timer, delay, transmit_packet_list, n);
+	scheduled_tsn = (current_tsn.tsn_value + delay) % MAX_ACTIVE_TSN;
+
+	/* Time slot 0 is reserved to beacon frame*/
+	if( scheduled_tsn == 0 ){
+		++scheduled_tsn;
+	}
+
+	n->transmit_tsn = scheduled_tsn;
 }
+
 /*---------------------------------------------------------------------------*/
 static void
 free_packet(struct neighbor_queue *n, struct rdc_buf_list *p, int status)
@@ -1426,12 +1391,12 @@ packet_sent(void *ptr, int status, int num_transmissions)
 		break;
 	}
 }
-#endif /*  */
+
 
 static void
 send_packet(mac_callback_t sent, void *ptr)
 {
-#if 0
+
 	struct rdc_buf_list *q;
 	struct neighbor_queue *n;
 	static uint8_t initialized = 0;
@@ -1525,19 +1490,16 @@ send_packet(mac_callback_t sent, void *ptr)
 		PRINTF("csma: could not allocate neighbor, dropping packet\n");
 	}
 	mac_call_sent_callback(sent, ptr, MAC_TX_ERR, 1);
-#endif
+
 }
 /*---------------------------------------------------------------------------*/
 static void
 input_packet(void)
 {
-/*
- * TODO: input callback disabled for now, need to figure out how to handle
- *      it for beacon frame input
- */
-#if 0
-	NETSTACK_LLSEC.input();
-#endif
+	if( active_period )
+	{
+		NETSTACK_LLSEC.input();
+	}
 
 }
 /*---------------------------------------------------------------------------*/
@@ -1545,18 +1507,20 @@ static int
 on(void)
 {
 
+
+
   if( be_is_started == FALSE) {
 	be_is_started = 1;
 
+	/* Process to send all the data packages pending */
+	process_start(&pending_send_process, NULL);
 	/* try to associate to a network or start one if setup as coordinator */
 	process_start(&keep_tsn_process, NULL);
 
-	return 1;
+	return NETSTACK_RDC.on();;
   }
   return 0;
-#if 0
-  return NETSTACK_RDC.on();
-#endif
+
 
 }
 /*---------------------------------------------------------------------------*/
